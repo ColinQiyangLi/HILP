@@ -164,10 +164,10 @@ class HILPAgent(flax.struct.PyTreeNode):
 
         new_network, info = agent.network.apply_loss_fn(loss_fn=partial(loss_fn, agent=agent, batch=batch), has_aux=True)
 
-        params = unfreeze(new_network.params)
+        params = new_network.params
         params['networks_target_value'] = new_target_params
         params['networks_skill_target_critic'] = new_skill_target_params
-        new_network = new_network.replace(params=freeze(params))
+        new_network = new_network.replace(params=params)
 
         return agent.replace(network=new_network), info
     update = jax.jit(update)
@@ -245,10 +245,10 @@ def create_learner(
         network_tx = optax.adam(learning_rate=lr)
         network_params = network_def.init(value_key, observations, observations, actions, np.zeros((1, skill_dim)))['params']
         network = TrainState.create(network_def, network_params, tx=network_tx)
-        params = unfreeze(network.params)
+        params = network.params
         params['networks_target_value'] = params['networks_value']
         params['networks_skill_target_critic'] = params['networks_skill_critic']
-        network = network.replace(params=freeze(params))
+        network = network.replace(params=params)
 
         config = flax.core.FrozenDict(dict(
             discount=discount, target_update_rate=tau, expectile=expectile,

@@ -46,7 +46,7 @@ flags.DEFINE_integer('eval_episodes', 50, '')
 flags.DEFINE_integer('num_video_episodes', 2, '')
 flags.DEFINE_integer('log_interval', 1000, '')
 flags.DEFINE_integer('eval_interval', 100000, '')
-flags.DEFINE_integer('save_interval', 1000000, '')
+flags.DEFINE_integer('save_interval', 100000, '')
 flags.DEFINE_integer('batch_size', 1024, '')
 flags.DEFINE_integer('train_steps', 1000000, '')
 
@@ -139,6 +139,21 @@ def get_env_and_dataset():
             env.viewer.cam.lookat[1] = 18
             env.viewer.cam.distance = 70
             env.viewer.cam.elevation = -90
+        elif 'medium' in FLAGS.env_name:
+            # env.viewer.cam.lookat[0] = 18
+            # env.viewer.cam.lookat[1] = 12
+            # env.viewer.cam.distance = 50
+            # env.viewer.cam.elevation = -90
+
+            viz_env, viz_dataset = d4rl_ant.get_env_and_dataset(env_name)
+            viz = ant_diagnostics.Visualizer(env_name, viz_env, viz_dataset, discount=FLAGS.discount)
+            # init_state = np.copy(viz_dataset['observations'][0])
+            # init_state[:2] = (12.5, 8)
+            aux_env = {
+                'viz_env': viz_env,
+                'viz_dataset': viz_dataset,
+                'viz': viz,
+            }
         else:
             raise NotImplementedError
     elif 'kitchen' in FLAGS.env_name:

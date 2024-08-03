@@ -65,7 +65,7 @@ def default_wandb_config():
 
 def setup_wandb(
     hyperparam_dict,
-    entity=None,
+    entity="None",
     project="jaxrl_m",
     group=None,
     name=None,
