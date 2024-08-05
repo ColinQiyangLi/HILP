@@ -18,6 +18,8 @@ import jax
 import jax.numpy as jnp
 import flax
 
+import matplotlib.pyplot as plt
+
 import tqdm
 
 from src import d4rl_utils, d4rl_ant, ant_diagnostics, viz_utils
@@ -27,6 +29,8 @@ from src.dataset_utils import GCDataset
 from jaxrl_m.wandb import setup_wandb, default_wandb_config
 import wandb
 from jaxrl_m.evaluation import evaluate_with_trajectories, EpisodeMonitor
+
+import gym
 
 from ml_collections import config_flags
 import pickle
@@ -80,6 +84,57 @@ flags.DEFINE_string('algo_name', None, '')  # Not used, only for logging
 config_flags.DEFINE_config_dict('wandb', default_wandb_config(), lock_config=False)
 
 
+def color_maze_and_configure_camera(env):
+    # Update colors
+    l = len(env.model.tex_type)
+    # breakpoint()
+    sx, sy, ex, ey = 15, 45, 55, 100
+    for i in range(l):
+        if env.model.tex_type[i] == 0:
+            height = env.model.tex_height[i]
+            width = env.model.tex_width[i]
+            s = env.model.tex_adr[i]
+            for x in range(height):
+                for y in range(width):
+                    cur_s = s + (x * width + y) * 3
+                    R = 192
+                    r = int((ex - x) / (ex - sx) * R)
+                    g = int((y - sy) / (ey - sy) * R)
+                    r = np.clip(r, 0, R)
+                    g = np.clip(g, 0, R)
+                    env.model.tex_rgb[cur_s : cur_s + 3] = [r, g, 128]
+    env.model.mat_texrepeat[0, :] = 1
+    # breakpoint()
+    
+    # Configure camera
+    env.render(mode="rgb_array", width=200, height=200)
+    env.viewer.cam.azimuth = 90.0
+    env.viewer.cam.distance = 6
+    env.viewer.cam.elevation = -60
+
+    return env
+
+class RenderObservation(gym.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+
+    def observation(self, observation):
+        return self.render_obs(observation)
+
+    def render_obs(self, observation):
+        assert self.viewer.cam.azimuth == 90
+        assert self.viewer.cam.elevation == -60
+        assert self.viewer.cam.distance == 6
+        self.viewer.cam.lookat[0] = observation[0]
+        self.viewer.cam.lookat[1] = observation[1]
+        self.viewer.cam.lookat[2] = 0
+        return {
+            "pixels": self.render(mode="rgb_array", width=64, height=64), # last dim for stacking
+            "state": observation[2:],
+            "position": observation[:2],
+        }
+
+
 @jax.jit
 def get_traj_v(agent, trajectory):
     def get_v(s, g):
@@ -101,7 +156,7 @@ def get_v_goal(agent, goal, observations):
     return (v1 + v2) / 2
 
 
-def get_env_and_dataset():
+def get_env_and_dataset(vam=False):
     aux_env = {}
     goal_info = {}
     if 'antmaze' in FLAGS.env_name:
@@ -118,12 +173,14 @@ def get_env_and_dataset():
         dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, goal_conditioned=True)
         dataset = dataset.copy({'rewards': dataset['rewards'] - 1.0})
 
-        env.render(mode='rgb_array', width=200, height=200)
+        if not vam:
+            env.render(mode='rgb_array', width=200, height=200)
         if 'large' in FLAGS.env_name:
-            env.viewer.cam.lookat[0] = 18
-            env.viewer.cam.lookat[1] = 12
-            env.viewer.cam.distance = 50
-            env.viewer.cam.elevation = -90
+            if not vam:
+                env.viewer.cam.lookat[0] = 18
+                env.viewer.cam.lookat[1] = 12
+                env.viewer.cam.distance = 50
+                env.viewer.cam.elevation = -90
 
             viz_env, viz_dataset = d4rl_ant.get_env_and_dataset(env_name)
             viz = ant_diagnostics.Visualizer(env_name, viz_env, viz_dataset, discount=FLAGS.discount)
@@ -135,10 +192,11 @@ def get_env_and_dataset():
                 'viz': viz,
             }
         elif 'ultra' in FLAGS.env_name:
-            env.viewer.cam.lookat[0] = 26
-            env.viewer.cam.lookat[1] = 18
-            env.viewer.cam.distance = 70
-            env.viewer.cam.elevation = -90
+            if not vam:
+                env.viewer.cam.lookat[0] = 26
+                env.viewer.cam.lookat[1] = 18
+                env.viewer.cam.distance = 70
+                env.viewer.cam.elevation = -90
         elif 'medium' in FLAGS.env_name:
             # env.viewer.cam.lookat[0] = 18
             # env.viewer.cam.lookat[1] = 12
@@ -209,7 +267,38 @@ def main(_):
     FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, wandb.config.exp_prefix, wandb.config.experiment_id)
     os.makedirs(FLAGS.save_dir, exist_ok=True)
 
-    env, dataset, aux_env, goal_info = get_env_and_dataset()
+    env, dataset, aux_env, goal_info = get_env_and_dataset(vam=True)
+
+    env = RenderObservation(env)
+    env = color_maze_and_configure_camera(env)
+    
+    # render the goal
+    qpos = np.copy(env.env.env.env.env.init_qpos)
+    qvel = np.copy(env.env.env.env.env.init_qvel)
+    qpos[:2] = np.array(env.env.env.env.env.target_goal)
+    env.env.env.env.env.set_state(qpos, qvel)
+    observation = env.env.env.env.env._get_obs()
+    vam_info = env.render_obs(observation)
+    plt.imshow(vam_info["pixels"])
+    plt.savefig("goal.png")
+
+    obs = env.reset()
+    plt.imshow(obs["pixels"])
+    plt.savefig("start.png")
+    env.reset()
+    
+    # eval_env = color_maze_and_configure_camera(eval_env)
+    image_dataset = dict(np.load(f"data/antmaze_topview_6_60/{FLAGS.env_name}.npz"))
+
+    dataset = dataset.copy({"observations": dict(
+        position=dataset["observations"][:, :2],
+        state=dataset["observations"][:, 2:],
+        pixels=image_dataset["images"],
+    ), "next_observations": dict(
+        position=dataset["next_observations"][:, :2],
+        state=dataset["next_observations"][:, 2:],
+        pixels=image_dataset["next_images"],
+    )})
 
     base_observation = jax.tree_map(lambda arr: arr[0], dataset['observations'])
     env.reset()
@@ -222,6 +311,8 @@ def main(_):
 
     total_steps = FLAGS.train_steps
     example_batch = dataset.sample(1)
+
+    # breakpoint()
     agent = learner.create_learner(
         FLAGS.seed,
         example_batch['observations'],
@@ -295,7 +386,7 @@ def main(_):
                 eval_info, cur_trajs, renders = evaluate_with_trajectories(
                     agent, env, goal_info=goal_info, env_name=FLAGS.env_name, num_episodes=num_episodes,
                     base_observation=base_observation, num_video_episodes=num_video_episodes,
-                    policy_type=policy_type, planning_info=planning_info,
+                    policy_type=policy_type, planning_info=planning_info, vam_info=vam_info,
                 )
                 eval_metrics.update({f'{policy_type}/{k}': v for k, v in eval_info.items()})
                 trajs_dict[policy_type] = cur_trajs
@@ -311,21 +402,21 @@ def main(_):
             )
             eval_metrics['value_traj_viz'] = wandb.Image(value_viz)
 
-            if 'antmaze' in FLAGS.env_name and 'large' in FLAGS.env_name:
-                trajs = trajs_dict['goal_skill']
-                viz_env, viz_dataset, viz = aux_env['viz_env'], aux_env['viz_dataset'], aux_env['viz']
-                traj_image = d4rl_ant.trajectory_image(viz_env, viz_dataset, trajs)
-                eval_metrics['trajectories'] = wandb.Image(traj_image)
+            # if 'antmaze' in FLAGS.env_name and 'large' in FLAGS.env_name:
+            #     trajs = trajs_dict['goal_skill']
+            #     viz_env, viz_dataset, viz = aux_env['viz_env'], aux_env['viz_dataset'], aux_env['viz']
+            #     traj_image = d4rl_ant.trajectory_image(viz_env, viz_dataset, trajs)
+            #     eval_metrics['trajectories'] = wandb.Image(traj_image)
 
-                new_metrics_dist = viz.get_distance_metrics(trajs)
-                eval_metrics.update({f'debugging/{k}': v for k, v in new_metrics_dist.items()})
+            #     new_metrics_dist = viz.get_distance_metrics(trajs)
+            #     eval_metrics.update({f'debugging/{k}': v for k, v in new_metrics_dist.items()})
 
-                image_goal = d4rl_ant.gcvalue_image(
-                    viz_env,
-                    viz_dataset,
-                    partial(get_v_goal, agent),
-                )
-                eval_metrics['v_goal'] = wandb.Image(image_goal)
+            #     image_goal = d4rl_ant.gcvalue_image(
+            #         viz_env,
+            #         viz_dataset,
+            #         partial(get_v_goal, agent),
+            #     )
+            #     eval_metrics['v_goal'] = wandb.Image(image_goal)
 
             wandb.log(eval_metrics, step=i)
             eval_logger.log(eval_metrics, step=i)

@@ -125,7 +125,7 @@ def loss_fn(network_params, agent, batch):
         info[f'value/{k}'] = v
 
     # Skill policy
-    batch_size = batch['observations'].shape[0]
+    batch_size = batch['actions'].shape[0]
     batch['phis'] = agent.network(batch['observations'], method='phi')
     batch['next_phis'] = agent.network(batch['next_observations'], method='phi')
     random_skills = np.random.randn(batch_size, agent.config['skill_dim'])

@@ -1,5 +1,6 @@
 import flax.linen as nn
 import jax.numpy as jnp
+from jaxrl_m.networks import MLP
 
 def default_init(scale: float = jnp.sqrt(2)):
     return nn.initializers.orthogonal(scale)
@@ -17,6 +18,8 @@ class ResnetStack(nn.Module):
 
     @nn.compact
     def __call__(self, observations: jnp.ndarray) -> jnp.ndarray:
+
+        # print(observations.shape)
         initializer = nn.initializers.xavier_uniform()
         conv_out = nn.Conv(
             features=self.num_ch,
@@ -95,11 +98,43 @@ class ImpalaEncoder(nn.Module):
         # print(conv_out.shape, conv_out.reshape((*x.shape[:-3], -1)).shape)
         return conv_out.reshape((*x.shape[:-3], -1))
     
+class VAMImpalaEncoder(ImpalaEncoder):
+    @nn.compact
+    def __call__(self, x, train=True, cond_var=None):
+        s = x["state"]
+        x = x["pixels"].astype(jnp.float32) / 255.0
+        # x = jnp.reshape(x, (*x.shape[:-2], -1))
+
+        conv_out = x
+
+        for idx in range(len(self.stack_blocks)):
+            conv_out = self.stack_blocks[idx](conv_out)
+            if self.dropout_rate is not None:
+                conv_out = self.dropout(conv_out, deterministic=not train)
+            if self.use_multiplicative_cond:
+                assert cond_var is not None, "Cond var shouldn't be done when using it"
+                print("Using Multiplicative Cond!")
+                temp_out = nn.Dense(conv_out.shape[-1], kernel_init=xavier_init())(cond_var)
+                x_mult = jnp.expand_dims(jnp.expand_dims(temp_out, 1), 1)
+                print ('x_mult shape in IMPALA:', x_mult.shape, conv_out.shape)
+                conv_out = conv_out * x_mult
+
+        conv_out = nn.relu(conv_out)
+        # print(conv_out.shape, conv_out.reshape((*x.shape[:-3], -1)).shape)
+        img_embd = conv_out.reshape((*x.shape[:-3], -1))
+        state_embd = MLP((256, 256), activate_final=True)(s)  # encode state for antmaze
+
+        # print(img_embd.shape, state_embd.shape)
+        # breakpoint()
+
+        return jnp.concatenate([img_embd, state_embd], axis=-1)
+
 import functools as ft
 impala_configs = {
     'impala': ImpalaEncoder,
     'impala_debug': ft.partial(ImpalaEncoder, num_blocks=1, stack_sizes=(4, 4)),
     'impala_small': ft.partial(ImpalaEncoder, num_blocks=1),
+    'impala_small_vam': ft.partial(VAMImpalaEncoder, num_blocks=1),
     'impala_large': ft.partial(ImpalaEncoder, stack_sizes=(16, 32, 32, 32)),
     'impala_larger': ft.partial(ImpalaEncoder, stack_sizes=(16, 32, 32, 32, 32)),
     'impala_largest': ft.partial(ImpalaEncoder, stack_sizes=(16, 32, 32, 32, 32, 32)),

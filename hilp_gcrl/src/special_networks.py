@@ -5,6 +5,8 @@ from jaxrl_m.typing import *
 from jaxrl_m.networks import *
 import jax
 
+from flax.core.frozen_dict import FrozenDict
+
 
 class LayerNormMLP(nn.Module):
     hidden_dims: Sequence[int]
@@ -66,7 +68,7 @@ class GoalConditionedValue(nn.Module):
         if goals is None:
             v = self.value_net(observations).squeeze(-1)
         else:
-            v = self.value_net(jnp.concatenate([observations, goals], axis=-1)).squeeze(-1)
+            v = self.value_net(concatenate([observations, goals], axis=-1)).squeeze(-1)
 
         return v
 
@@ -114,9 +116,9 @@ class GoalConditionedCritic(nn.Module):
 
     def __call__(self, observations, goals=None, actions=None, info=False):
         if goals is None:
-            q = self.critic_net(jnp.concatenate([observations, actions], axis=-1)).squeeze(-1)
+            q = self.critic_net(concatenate([observations, actions], axis=-1)).squeeze(-1)
         else:
-            q = self.critic_net(jnp.concatenate([observations, goals, actions], axis=-1)).squeeze(-1)
+            q = self.critic_net(concatenate([observations, goals, actions], axis=-1)).squeeze(-1)
 
         return q
 
@@ -132,18 +134,46 @@ def get_rep(
         else:
             return encoder(targets, bases)
 
+def concatenate(vs, *args, **kwargs):
+    if type(vs[0]) == dict or type(vs[0]) == FrozenDict:
+        tp = type(vs[0])
+        r = {}
+        for key in vs[0].keys():
+            r[key] = jnp.concatenate([v[key] for v in vs], *args, **kwargs)
+        return r if tp == dict else FrozenDict(r)
+    else:
+        return jnp.concatenate(vs, *args, **kwargs)
+
+def stack(vs, *args, **kwargs):
+    if type(vs[0]) == dict or type(vs[0]) == FrozenDict:
+        tp = type(vs[0])
+        r = {}
+        for key in vs[0].keys():
+            r[key] = jnp.stack([v[key] for v in vs], *args, **kwargs)
+        return r if tp == dict else FrozenDict(r)
+    else:
+        return jnp.stack(vs, *args, **kwargs)
 
 class HILPNetwork(nn.Module):
     networks: Dict[str, nn.Module]
 
     def unsqueeze_context(self, observations, contexts):
-        if len(observations.shape) <= 2:
-            return contexts
+        if type(observations) == dict or type(observations) == FrozenDict:
+            pixels = observations["pixels"]
+            d = {
+                "pixels": jnp.expand_dims(jnp.expand_dims(contexts, axis=-2), axis=-2).repeat(pixels.shape[-3], axis=-3).repeat(pixels.shape[-2], axis=-2),
+                "state": contexts,
+                "position": contexts,
+            }
+            return d if type(observations) == dict else FrozenDict(d)
         else:
-            # observations: (H, W, D) or (B, H, W, D)
-            # contexts: (Z) -> (H, W, Z) or (B, Z) -> (B, H, W, Z)
-            assert len(observations.shape) == len(contexts.shape) + 2
-            return jnp.expand_dims(jnp.expand_dims(contexts, axis=-2), axis=-2).repeat(observations.shape[-3], axis=-3).repeat(observations.shape[-2], axis=-2)
+            if len(observations.shape) <= 2:
+                return contexts
+            else:
+                # observations: (H, W, D) or (B, H, W, D)
+                # contexts: (Z) -> (H, W, Z) or (B, Z) -> (B, H, W, Z)
+                assert len(observations.shape) == len(contexts.shape) + 2
+                return jnp.expand_dims(jnp.expand_dims(contexts, axis=-2), axis=-2).repeat(observations.shape[-3], axis=-3).repeat(observations.shape[-2], axis=-2)
 
     def value(self, observations, goals=None, **kwargs):
         return self.networks['value'](observations, goals, **kwargs)
@@ -174,7 +204,7 @@ class HILPNetwork(nn.Module):
 
     def skill_actor(self, observations, skills, **kwargs):
         skills = self.unsqueeze_context(observations, skills)
-        return self.networks['skill_actor'](jnp.concatenate([observations, skills], axis=-1), **kwargs)
+        return self.networks['skill_actor'](concatenate([observations, skills], axis=-1), **kwargs)
 
     def __call__(self, observations, goals, actions, skills):
         # Only for initialization

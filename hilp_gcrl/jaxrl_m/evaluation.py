@@ -7,6 +7,9 @@ from collections import defaultdict
 import time
 from tqdm import trange
 
+from src.special_networks import concatenate, stack
+from flax.core.frozen_dict import FrozenDict
+
 
 def supply_rng(f, rng=jax.random.PRNGKey(0)):
     """
@@ -46,15 +49,20 @@ def add_to(dict_of_lists, single_dict):
         dict_of_lists[k].append(v)
 
 
-def env_reset(env_name, env, goal_info, base_observation, policy_type):
+def env_reset(env_name, env, goal_info, base_observation, policy_type, vam_info=None):
     observation, done = env.reset(), False
     if policy_type == 'random_skill' and 'antmaze' in env_name:
         observation[:2] = [20, 8]
         env.set_state(observation[:15], observation[15:])
 
+    # breakpoint()
     if 'antmaze' in env_name:
-        goal = env.wrapped_env.target_goal
-        obs_goal = np.concatenate([goal, base_observation[-27:]])
+        if vam_info is not None:
+            # observation = vam_info["observation"]
+            obs_goal = vam_info
+        else:
+            goal = env.wrapped_env.target_goal
+            obs_goal = np.concatenate([goal, base_observation[-27:]])
     elif 'kitchen' in env_name:
         if 'visual' in env_name:
             observation = kitchen_render(env)
@@ -65,6 +73,7 @@ def env_reset(env_name, env, goal_info, base_observation, policy_type):
     else:
         raise NotImplementedError
 
+    # breakpoint()
     return observation, obs_goal
 
 
@@ -96,7 +105,11 @@ def get_frame(env_name, env):
 
 def add_episode_info(env_name, env, info, trajectory):
     if 'antmaze' in env_name:
-        info['final_dist'] = np.linalg.norm(trajectory['next_observation'][-1][:2] - env.wrapped_env.target_goal)
+        if type(trajectory['next_observation'][-1]) == dict or type(trajectory['next_observation'][-1]) == FrozenDict:
+            pos = trajectory['next_observation'][-1]["position"]
+        else:
+            pos = trajectory['next_observation'][-1][:2]
+        info['final_dist'] = np.linalg.norm(pos - env.wrapped_env.target_goal)
     elif 'kitchen' in env_name:
         info['success'] = float(info['episode']['return'] == 4.0)
     else:
@@ -105,7 +118,7 @@ def add_episode_info(env_name, env, info, trajectory):
 
 def evaluate_with_trajectories(
         agent, env: gym.Env, goal_info, env_name, num_episodes, base_observation=None, num_video_episodes=0,
-        policy_type='goal_skill', planning_info=None,
+        policy_type='goal_skill', planning_info=None, vam_info=None,
 ) -> Dict[str, float]:
     policy_fn = supply_rng(agent.sample_skill_actions)
 
@@ -119,7 +132,7 @@ def evaluate_with_trajectories(
     for i in trange(num_episodes + num_video_episodes):
         trajectory = defaultdict(list)
 
-        observation, obs_goal = env_reset(env_name, env, goal_info, base_observation, policy_type)
+        observation, obs_goal = env_reset(env_name, env, goal_info, base_observation, policy_type, vam_info=vam_info)
         done = False
 
         render = []
@@ -130,11 +143,13 @@ def evaluate_with_trajectories(
             policy_goal = obs_goal
 
             if policy_type == 'goal_skill':
-                phi_obs, phi_goal = agent.get_phi(np.array([policy_obs, policy_goal]))
+                st = stack((policy_obs, policy_goal), axis=0)
+                # breakpoint()
+                phi_obs, phi_goal = agent.get_phi(st)
                 skill = (phi_goal - phi_obs) / np.linalg.norm(phi_goal - phi_obs)
                 action = policy_fn(observations=policy_obs, skills=skill, temperature=0.)
             elif policy_type == 'goal_skill_planning':
-                phi_obs, phi_goal = agent.get_phi(np.array([policy_obs, policy_goal]))
+                phi_obs, phi_goal = agent.get_phi(stack((policy_obs, policy_goal), axis=0))
 
                 for k in range(planning_info['num_recursions']):
                     ex_phis = planning_info['examples']['phis']

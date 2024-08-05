@@ -218,7 +218,12 @@ def plot_line_trajectories(env, dataset, trajectories, fig, ax, color_list=None)
         color_list = cycle(color_cycle)
 
     for color, trajectory in zip(color_list, trajectories):
-        obs = np.array(trajectory['observation'])
+
+        breakpoint()
+        if type(trajectory['observation'][0]) == dict or type(trajectory['observation'][0]) == FrozenDict:
+            obs = np.stack([t['position'] for t in trajectory['observation']], axis=0)
+        else:
+            obs = np.array(trajectory['observation'])
         all_x = obs[:, 0]
         all_y = obs[:, 1]
         ax.plot(all_x, all_y, color=color, linewidth=0.7)
